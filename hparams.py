@@ -13,7 +13,7 @@ import yaml
 #data_path = "/home/kaiwei/SpeechNet/FastSpeech2/dataset/VCTK-Corpus"
 
 dataset = "LibriTTS"
-data_path = "./dataset/LibriTTS/train-clean-360"
+data_path = "../LibriTTS/train-clean-100"          #change to train-clean-100
 mfa_path = "./MFA"
 
 ### Text ###
@@ -98,9 +98,9 @@ vocoder = 'melgan'
 log_offset = 1.
 
 # Save, log and synthesis
-save_step = 20000
+save_step = 1000
 synth_step = 2000
-eval_step = 2000
+eval_step = 10
 eval_size = 256
-log_step = 1000
+log_step = 10
 clear_Time = 20

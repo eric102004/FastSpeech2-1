@@ -11,6 +11,7 @@ import librosa
 import hparams as hp
 import random
 from pathlib import Path
+from scipy.io.wavfile import read
 
 ### spk table ###
 def get_spk_table():
@@ -75,14 +76,18 @@ def build_from_path(in_dir, out_dir):
             filename = file_path[1]
             basename = filename.replace(".normalized.txt", "")
             
-            ret = process_utterance(in_dir, out_dir, subdir, basename)
-            
+            try:
+                ret = process_utterance(in_dir, out_dir, subdir, basename)
+            except:
+                ret = None
+                print('error file:', basename)
+
             if ret is None:
                 continue
             else:
                 info, f_max, f_min, e_max, e_min, n = ret
                 
-            if i == 0: 
+            if basename[:4] == '1116':                      #change 
                 val.append(info)
             else:
                 train.append(info)
@@ -126,6 +131,7 @@ def process_utterance(in_dir, out_dir, dirname, basename):
     
     # Read and trim wav files
     wav, _ = librosa.load(wav_path, sr=hp.sampling_rate)
+    #_, wav = read(wav_path)
     wav = wav[int(hp.sampling_rate*start):int(hp.sampling_rate*end)].astype(np.float32)
     
     # Compute fundamental frequency

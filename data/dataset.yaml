@@ -36,9 +36,12 @@ LibriTTS:
     filter_length : 1024
     hop_length : 256
     win_length : 1024
-    f0_min : 70.0
-    f0_max : 800.0
-    energy_min : 0.0
-    energy_max : 570.0
+    #f0_min : 70.0
+    #f0_max : 800.0
+    #energy_min : 0.0
+    #energy_max : 570.0
     use_spk_embed : True
-
+    f0_min : 71.22209900429856
+    f0_max : 793.6237701859899
+    energy_min : 0.0008587090414948761
+    energy_max : 185.13246154785156
