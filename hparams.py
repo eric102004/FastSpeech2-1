@@ -104,3 +104,6 @@ eval_step = 10
 eval_size = 256
 log_step = 10
 clear_Time = 20
+
+#fine tune in synthesis
+syn_fine_tune_step = 500

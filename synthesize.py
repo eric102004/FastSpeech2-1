@@ -16,6 +16,12 @@ import audio as Audio
 from utils import get_mask_from_lengths
 import soundfile
 
+#import the modules needed for fine-tuning
+from torch.utils.data import DataLoader
+from loss import FastSpeech2Loss
+from dataset import Dataset
+from optimizer import ScheduledOptim
+
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,16 +52,88 @@ def preprocess(text):
 
     return torch.from_numpy(sequence).long().to(device)
 
-def get_FastSpeech2(num):
+#def get_FastSpeech2(num):
+def get_FastSpeech2(num, loader):
     checkpoint_path = os.path.join(hp.checkpoint_path, "checkpoint_{}.pth.tar".format(num))
     n_spkers = torch.load(checkpoint_path)['model']['module.embed_speakers.weight'].shape[0]
     
     if hp.use_spk_embed:    
-        model = nn.DataParallel(FastSpeech2(True, n_spkers))
+        #model = nn.DataParallel(FastSpeech2(True, n_spkers)).to(device)
+        model = FastSpeech2(True, n_spkers).to(device)
     else:
-        model = nn.DataParallel(FastSpeech2())
-        
-    model.load_state_dict(torch.load(checkpoint_path)['model'])
+        model = nn.DataParallel(FastSpeech2()).to(device)
+    #model.load_state_dict(torch.load(checkpoint_path)['model'])
+    checkpoint = torch.load(checkpoint_path)
+    for n, p in checkpoint['model'].items():
+        if n[7:] not in model.state_dict():
+            print('not in meta_model:', n)
+            continue
+        if isinstance(p, nn.parameter.Parameter):
+            p = p.data
+        model.state_dict()[n[7:]].copy_(p)
+
+
+    #################
+    #fine-tuning
+    #optimizer and loss
+    optimizer = torch.optim.Adam(model.parameters(), betas=hp.betas, eps=hp.eps, weight_decay = hp.weight_decay)
+    scheduled_optim = ScheduledOptim(optimizer, hp.decoder_hidden, hp.n_warm_up_step, args.step)
+    Loss = FastSpeech2Loss().to(device)
+
+    #fine-tuning
+    print('start fine-tuning')
+    model = model.train()
+    #check grad
+    for n,p in model.named_parameters():
+        #if n[7:10] not in {'var', 'dec', 'enc', 'pos', 'mel', 'enc'} or n[15:18]=='pos':
+        if n[:3] not in {'var'}:
+            p.requires_grad = False
+        print(n, p.requires_grad)
+    current_step = 0
+    print('while loop')
+    while current_step < hp.syn_fine_tune_step:
+        for i,batchs in enumerate(loader):
+            for j, data_of_batch in enumerate(batchs):
+                # Get Data
+                text = torch.from_numpy(data_of_batch["text"]).long().to(device)
+                mel_target = torch.from_numpy(data_of_batch["mel_target"]).float().to(device)
+                D = torch.from_numpy(data_of_batch["D"]).long().to(device)
+                log_D = torch.from_numpy(data_of_batch["log_D"]).float().to(device)
+                f0 = torch.from_numpy(data_of_batch["f0"]).float().to(device)
+                energy = torch.from_numpy(data_of_batch["energy"]).float().to(device)
+                src_len = torch.from_numpy(data_of_batch["src_len"]).long().to(device)
+                mel_len = torch.from_numpy(data_of_batch["mel_len"]).long().to(device)
+                max_src_len = np.max(data_of_batch["src_len"]).astype(np.int32)
+                max_mel_len = np.max(data_of_batch["mel_len"]).astype(np.int32)
+
+                spk_ids = torch.tensor([7]*hp.batch_size).to(device)
+
+                # Forward
+                mel_output, mel_postnet_output, log_duration_output, f0_output, energy_output, src_mask, mel_mask, _ = model(
+                    text, src_len, mel_len, D, f0, energy, max_src_len, max_mel_len, spk_ids)
+
+                # Cal Loss
+                mel_loss, mel_postnet_loss, d_loss, f_loss, e_loss = Loss(
+                        log_duration_output, log_D, f0_output, f0, energy_output, energy, mel_output, mel_postnet_output, mel_target, ~src_mask, ~mel_mask)
+                total_loss = mel_loss + mel_postnet_loss + d_loss + f_loss + e_loss
+
+                # print loss
+                if (current_step+1)%10==0:
+                    str2 = "Total Loss: {:.4f}, Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Duration Loss: {:.4f}, F0 Loss: {:.4f}, Energy Loss: {:.4f};".format(total_loss, mel_loss, mel_postnet_loss, d_loss, f_loss, e_loss)
+                    print(str2 + '\n')
+
+                # Backward
+                total_loss = total_loss / hp.acc_steps
+                total_loss.backward()
+
+                # Clipping gradients to avoid gradient explosion
+                nn.utils.clip_grad_norm_(model.parameters(), hp.grad_clip_thresh)
+                # Update weights
+                scheduled_optim.step_and_update_lr()
+                scheduled_optim.zero_grad()
+
+                current_step +=1
+    ###########################################
     model.requires_grad = False
     model.eval()
     return model
@@ -103,6 +181,8 @@ def synthesize(model, waveglow, melgan, text, sentence, prefix=''):
             # output
             base_dir_i = os.path.join(hp.test_path, hp.dataset, "step {}".format(args.step), spker)
             os.makedirs(base_dir_i, exist_ok=True)
+            #use griffin-lim 
+            Audio.tools.inv_mel_spec(mel_postnet_torch, os.path.join(base_dir_i,'{}_griffin_lim_{}.wav'.format(prefix, sentence)))
             path_i = os.path.join(base_dir_i, '{}_{}_{}.wav'.format(prefix, hp.vocoder, sentence))
             soundfile.write(path_i, wav_i, hp.sampling_rate)
             utils.plot_data([(mel_postnet_i.numpy(), f0_i, energy_i)], 
@@ -146,8 +226,11 @@ if __name__ == "__main__":
                      "So far, this is the oldest I’ve been.",
                      "I am in shape. Round is a shape."
                 ]
+    dataset = Dataset('val.txt')
+    loader = DataLoader(dataset, batch_size=hp.batch_size**2, shuffle=True, collate_fn=dataset.collate_fn, drop_last=True, num_workers=0)
         
-    model = get_FastSpeech2(args.step).to(device)
+    #model = get_FastSpeech2(args.step).to(device)
+    model = get_FastSpeech2(args.step, loader).to(device)
     melgan = waveglow = None
     if hp.vocoder == 'melgan':
         melgan = utils.get_melgan()
